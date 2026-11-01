@@ -1,0 +1,41 @@
+{
+  "format": "lucida-event-fixtures/1",
+  "description": "Server SDK wire fixtures. Each case calls one SDK method and expects exactly one event on POST /v1/batch (body {api_key, batch, sent_at}). expected.uuid/timestamp of \"*\" match any non-empty string; properties are compared after removing $lib/$lib_version (which must be present, $lib starting with \"lucida-\"). Methods: capture{distinct_id,event,properties,groups,set,set_once,timestamp,uuid}, identify{distinct_id,properties,properties_set_once}, alias{distinct_id,alias}, group_identify{group_type,group_key,properties,distinct_id}.",
+  "cases": [
+    {
+      "name": "capture minimal",
+      "call": {"method": "capture", "distinct_id": "u1", "event": "purchase", "uuid": "01890a5d-ac96-7ab2-80e2-4536629c90de", "timestamp": "2026-01-02T03:04:05.678Z"},
+      "expected": {"uuid": "01890a5d-ac96-7ab2-80e2-4536629c90de", "event": "purchase", "distinct_id": "u1", "timestamp": "2026-01-02T03:04:05.678Z", "properties": {}}
+    },
+    {
+      "name": "capture with properties, groups and person props",
+      "call": {"method": "capture", "distinct_id": "u2", "event": "checkout", "properties": {"total": 12.5, "items": ["a", "b"]}, "groups": {"company": "acme"}, "set": {"plan": "pro"}, "set_once": {"first_seen": "2026-01-01"}, "uuid": "01890a5d-ac96-7ab2-80e2-4536629c90df", "timestamp": "2026-01-02T03:04:05.678Z"},
+      "expected": {"uuid": "01890a5d-ac96-7ab2-80e2-4536629c90df", "event": "checkout", "distinct_id": "u2", "timestamp": "2026-01-02T03:04:05.678Z", "properties": {"total": 12.5, "items": ["a", "b"]}, "$groups": {"company": "acme"}, "$set": {"plan": "pro"}, "$set_once": {"first_seen": "2026-01-01"}}
+    },
+    {
+      "name": "capture defaults uuid and timestamp",
+      "call": {"method": "capture", "distinct_id": "u3", "event": "view"},
+      "expected": {"uuid": "*", "event": "view", "distinct_id": "u3", "timestamp": "*", "properties": {}}
+    },
+    {
+      "name": "identify",
+      "call": {"method": "identify", "distinct_id": "u1", "properties": {"email": "a@b.co"}, "properties_set_once": {"signup": "web"}},
+      "expected": {"uuid": "*", "event": "$identify", "distinct_id": "u1", "timestamp": "*", "properties": {}, "$set": {"email": "a@b.co"}, "$set_once": {"signup": "web"}}
+    },
+    {
+      "name": "alias",
+      "call": {"method": "alias", "distinct_id": "u1", "alias": "anon-9"},
+      "expected": {"uuid": "*", "event": "$create_alias", "distinct_id": "u1", "timestamp": "*", "properties": {"alias": "anon-9", "distinct_id": "u1"}}
+    },
+    {
+      "name": "group_identify default distinct id",
+      "call": {"method": "group_identify", "group_type": "company", "group_key": "acme", "properties": {"seats": 5}},
+      "expected": {"uuid": "*", "event": "$groupidentify", "distinct_id": "$company_acme", "timestamp": "*", "properties": {"$group_type": "company", "$group_key": "acme", "$group_set": {"seats": 5}}}
+    },
+    {
+      "name": "group_identify explicit distinct id",
+      "call": {"method": "group_identify", "group_type": "company", "group_key": "acme", "distinct_id": "u9"},
+      "expected": {"uuid": "*", "event": "$groupidentify", "distinct_id": "u9", "timestamp": "*", "properties": {"$group_type": "company", "$group_key": "acme", "$group_set": {}}}
+    }
+  ]
+}
