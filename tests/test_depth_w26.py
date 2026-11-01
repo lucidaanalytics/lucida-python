@@ -55,12 +55,16 @@ def test_capture_immediate_retries_then_succeeds() -> None:
 def test_direct_sender_gives_up_after_cap_and_not_on_4xx() -> None:
     seen: list[int] = []
     errors: list[Exception] = []
-    s = q.DirectSender(lambda b: (seen.append(1) or (500, None)), on_error=lambda e, ev: errors.append(e), sleep=lambda d: None)
-    assert not s.send({"uuid": "1"})  # type: ignore[typeddict-item]
+    def reply(status: int) -> tuple[int, None]:
+        seen.append(1)
+        return (status, None)
+
+    s = q.DirectSender(lambda b: reply(500), on_error=lambda e, ev: errors.append(e), sleep=lambda d: None)
+    assert not s.send({"uuid": "1"})
     assert len(seen) == 3 and len(errors) == 1
     seen.clear()
-    s2 = q.DirectSender(lambda b: (seen.append(1) or (400, None)), sleep=lambda d: None)
-    assert not s2.send({"uuid": "2"})  # type: ignore[typeddict-item]
+    s2 = q.DirectSender(lambda b: reply(400), sleep=lambda d: None)
+    assert not s2.send({"uuid": "2"})
     assert len(seen) == 1
 
 

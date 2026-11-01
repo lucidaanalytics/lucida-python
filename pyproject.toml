@@ -33,5 +33,9 @@ files = ["src", "tests"]
 
 # The OpenFeature provider uses `openfeature-sdk` when installed and stand-ins otherwise, which mypy cannot type both ways.
 [[tool.mypy.overrides]]
+module = "openfeature.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 module = "lucida.openfeature_provider"
 ignore_errors = true
