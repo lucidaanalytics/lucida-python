@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,6 +14,7 @@ _SRC = Path(__file__).resolve().parents[1] / "src" / "lucida" / "openfeature_pro
 _spec = importlib.util.spec_from_file_location("lucida_openfeature_provider", _SRC)
 assert _spec and _spec.loader
 mod = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = mod  # dataclasses resolve string annotations through sys.modules
 _spec.loader.exec_module(mod)
 
 
