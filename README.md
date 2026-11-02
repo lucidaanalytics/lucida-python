@@ -102,13 +102,42 @@ any client with `get(key)` and `set(key, value, ex=, nx=)` (redis-py, valkey, fa
 lc = Lucida("lc_pk_...", secret_key=sk, flag_definition_cache=RedisFlagDefinitionCache(redis.Redis.from_url(url)))
 ```
 
+## Fallbacks and flag details
+
+`Lucida(..., fallbacks={"new-checkout": False, "theme": "blue"})` (also `AsyncLucida`): when a flag cannot be evaluated
+(network error, no definitions yet, quota limited, unknown key) the read returns the fallback with reason `"fallback"`;
+a per-call `default=` applies only when the key has no fallback. Fallback reads send no `$feature_flag_called` / `$exposure`.
+`get_feature_flag_details(key, distinct_id, ...)` returns a `FlagDetails` (`value`, `payload`, `variant`, `reason`,
+`condition_index`, `request_id`, `evaluated_locally`) or `None`. `on_flags_change(cb)` / `on_flags_stale(cb)` fire when
+definitions reload with a change / a reload fails or the flag stream drops.
+
 ## OpenFeature
 
 `lucida.openfeature_provider.LucidaProvider(client)` is an OpenFeature server provider (uses `openfeature-sdk` when installed: `pip install openfeature-sdk`).
 The targeting key is the distinct id and other context attributes are person properties; booleans and strings read the
 flag value (a variant key is the string value, and any variant is `True` for booleans), integers, floats and objects read
 the payload. Unknown flags raise `FlagNotFoundError`, a missing targeting key `TargetingKeyMissingError`, and a wrong
-payload type `TypeMismatchError`. Stdlib tests: `python3 -I tests/test_openfeature_provider.py`.
+payload type `TypeMismatchError`. Raw reasons map through `testdata/openfeature/reasons.json`; `flag_metadata` carries `lucidaReason`, `conditionIndex`, `requestId`, `evaluatedLocally`; the `groups` / `groupProperties` attributes feed Lucida groups; `track()` captures an event; provider events (ready, configuration changed, stale, error) follow definition reloads. Stdlib tests: `python3 -I tests/test_openfeature_provider.py`.
+
+## Agent analytics
+
+```python
+lc = Lucida("lc_pk_...", capture_text=False)
+convo = lc.ai_conversation(user_id, agent_name="support-bot", trace_id=trace_id, topic="billing")
+convo.message("user", question)
+convo.message("assistant", answer)
+convo.feedback("thumbs", -1)
+convo.end("resolved")
+```
+
+`AsyncLucida` has the same `ai_conversation`.
+Events: `$ai_conversation_started`, `$ai_message` (role, auto-incremented index, text length; for user
+messages a simhash `$ai_text_hash` and a lexicon `$ai_sentiment` so rephrases and frustration show without the
+text), `$ai_feedback` (thumbs 1/-1, rating 1..5, comment), `$ai_conversation_ended` and `$ai_outcome`
+(`resolved`, `unresolved`, `escalated`, `abandoned`, `error`). Message text and feedback comments are sent only
+with `capture_text=True`, after cards, emails and phone numbers are masked. `trace_id` (a W3C trace id) links the
+conversation to its trace in Watchtower; tokens, latency, cost and model names are never captured here.
+Events use the normal capture path, so consent and opt-out apply.
 
 ## Tests
 

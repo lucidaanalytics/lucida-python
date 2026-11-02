@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
+from ._ai_config import AiConfig, ai_config
+from ._agent import AgentConversation, start_conversation
 from ._build import BeforeSend, EventBuilder, OnError
 from ._core import (
     DEFAULT_HOST,
@@ -25,6 +27,7 @@ from ._core import (
     retry_delay,
 )
 from ._flags import (
+    FlagDetails,
     FlagOptions,
     FlagState,
     FlagValue,
@@ -74,6 +77,8 @@ class AsyncLucida:
         flag_dedup_cache_size: int = 10_000,
         flag_definition_cache: FlagDefinitionCacheProvider | None = None,
         default_properties: Props | None = None,
+        capture_text: bool = False,
+        fallbacks: Mapping[str, FlagValue] | None = None,
     ) -> None:
         """Same options as `Lucida` except `sync_mode` (use `await capture_immediate(...)`)."""
         setup_debug(debug)
@@ -84,12 +89,13 @@ class AsyncLucida:
             timeout=timeout, transport=httpx.MockTransport(no_network) if test_mode is not None else None
         )
         self._own_http = http_client is None
-        self._flags = FlagState(_seen=LruSet(flag_dedup_cache_size), app_contexts=app_contexts)
+        self._flags = FlagState(_seen=LruSet(flag_dedup_cache_size), app_contexts=app_contexts, fallbacks=dict(fallbacks or {}))
         self._flag_timeout = flag_timeout
         self._cache = flag_definition_cache
         self._builder = EventBuilder(before_send=before_send, on_error=on_error, disable_geoip=disable_geoip)
         if default_properties:
             self._builder.register(default_properties)
+        self._capture_text = capture_text
         self._direct = AsyncDirectSender(self._post_batch, on_error=on_error)
         self.sink: Sink | None = None
         """test_mode only: `sink.events` holds every captured event (including exposures), nothing is sent."""
@@ -191,6 +197,12 @@ class AsyncLucida:
             self.sink.add(e)
             return str(e["uuid"])
         return str(e["uuid"]) if await self._direct.send(e) else None
+
+    def ai_conversation(self, distinct_id: str | None, **opts: str | None) -> AgentConversation:
+        """Agent analytics: emits `$ai_conversation_started` and returns the handle (`message`, `feedback`, `end`,
+        `outcome`). Options: `conversation_id`, `agent_name`, `agent_version`, `trace_id`, `topic`, `use_case`.
+        Text is sent (redacted) only with `capture_text=True` on the client."""
+        return start_conversation(self.capture, distinct_id, self._capture_text, **opts)
 
     def register(self, properties: Props) -> None:
         self._builder.register(properties)
@@ -309,6 +321,8 @@ class AsyncLucida:
                             await self.reload_feature_flags()
             except httpx.HTTPError as e:
                 log.debug("flag stream failed: %s", e)
+            if self._streaming:
+                self._flags.notify(self._flags.on_stale)
             self._streaming = False
             await asyncio.sleep(retry_delay(attempt, base=self._stream_backoff))
             attempt += 1
@@ -318,6 +332,7 @@ class AsyncLucida:
             return
         if (cached := adopt_cached(self._cache)) is not None:
             self._flags.defs = cached
+            self._flags.notify(self._flags.on_change)
             return
         headers = {"Authorization": f"Bearer {self._secret}"}
         if self._flags.etag:
@@ -336,8 +351,10 @@ class AsyncLucida:
                 raise ValueError("bad definitions body")
             self._flags.defs, self._flags.etag = flags, r.headers.get("etag")
             publish_cached(self._cache, flags)
+            self._flags.notify(self._flags.on_change)
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
             log.debug("flag definitions poll failed: %s", e)
+            self._flags.notify(self._flags.on_stale)
 
     async def _remote(self, distinct_id: str, o: FlagOptions, keys: list[str] | None) -> dict[str, Resolved]:
         r = await self._post(
@@ -354,8 +371,8 @@ class AsyncLucida:
     async def _resolve(self, key: str, distinct_id: str, o: FlagOptions) -> Resolved | None:
         r = self._flags.local_one(key, distinct_id, o)
         if r or o.only_evaluate_locally:
-            return r
-        return (await self._remote(distinct_id, o, [key])).get(key)
+            return r or self._flags.fallback(key)
+        return (await self._remote(distinct_id, o, [key])).get(key) or self._flags.fallback(key)
 
     async def get_feature_flag(
         self,
@@ -374,10 +391,43 @@ class AsyncLucida:
             return None
         o = FlagOptions(person_properties, groups, group_properties, only_evaluate_locally, send_exposure, device_id=device_id)
         r = await self._resolve(key, distinct_id, o)
-        if r and send_exposure and self._flags.first_seen(distinct_id, key, r.value):
+        if r and not r.is_fallback and send_exposure and self._flags.first_seen(distinct_id, key, r.value):
             for name, props in exposure_events(key, r):
                 self.capture(distinct_id, name, props)
         return r.value if r else default
+
+    def on_flags_change(self, callback: Callable[[], None]) -> None:
+        """Call `callback()` whenever definitions are (re)loaded with a change (first load included)."""
+        self._flags.on_change.append(callback)
+
+    def on_flags_stale(self, callback: Callable[[], None]) -> None:
+        """Call `callback()` when a definitions reload fails or the flag stream drops."""
+        self._flags.on_stale.append(callback)
+
+    @property
+    def local_evaluation(self) -> bool:
+        """True when definitions are polled (a secret key is set and the client is enabled)."""
+        return bool(self._secret) and not self._disabled
+
+    @property
+    def definitions_loaded(self) -> bool:
+        return self._flags.defs is not None
+
+    async def get_feature_flag_details(
+        self, key: str, distinct_id: str, *, person_properties: Props | None = None,
+        groups: Mapping[str, str] | None = None, group_properties: Mapping[str, Props] | None = None,
+        only_evaluate_locally: bool = False, send_exposure: bool = True, device_id: str | None = None,
+    ) -> FlagDetails | None:
+        """Value, payload, variant, raw Lucida reason ("fallback" for an init-time fallback), condition index,
+        request id and `evaluated_locally`; None when unknown and no fallback. Exposure like `get_feature_flag`."""
+        if self._disabled:
+            return None
+        o = FlagOptions(person_properties, groups, group_properties, only_evaluate_locally, send_exposure, device_id=device_id)
+        r = await self._resolve(key, distinct_id, o)
+        if r and not r.is_fallback and send_exposure and self._flags.first_seen(distinct_id, key, r.value):
+            for name, props in exposure_events(key, r):
+                self.capture(distinct_id, name, props)
+        return r
 
     async def is_feature_enabled(self, key: str, distinct_id: str, **kw: Any) -> bool | None:
         v = await self.get_feature_flag(key, distinct_id, **kw)
@@ -393,6 +443,23 @@ class AsyncLucida:
         o = FlagOptions(person_properties, groups, group_properties, only_evaluate_locally)
         r = await self._resolve(key, distinct_id, o)
         return r.payload if r else None
+
+    async def get_ai_config(
+        self, key: str, distinct_id: str, fallback: AiConfig, *, variables: dict[str, str] | None = None,
+        person_properties: Props | None = None, groups: Mapping[str, str] | None = None,
+        group_properties: Mapping[str, Props] | None = None, only_evaluate_locally: bool = False,
+        send_exposure: bool = True,
+    ) -> AiConfig:
+        """The AI config variation served to ``distinct_id`` (completion or agent mode), or ``fallback``."""
+        if self._disabled:
+            return ai_config(None, None, fallback, variables)
+        o = FlagOptions(person_properties, groups, group_properties, only_evaluate_locally, send_exposure)
+        r = await self._resolve(key, distinct_id, o)
+        if r and not r.is_fallback and send_exposure and self._flags.first_seen(distinct_id, key, r.value):
+            for name, props in exposure_events(key, r):
+                self.capture(distinct_id, name, props)
+        variant = r.value if r and isinstance(r.value, str) else None
+        return ai_config(variant, r.payload if r else None, fallback, variables)
 
     async def _all(self, distinct_id: str, o: FlagOptions) -> dict[str, Resolved]:
         res, undecided = self._flags.local_all(distinct_id, o)

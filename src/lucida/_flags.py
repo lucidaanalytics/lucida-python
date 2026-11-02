@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -34,10 +34,31 @@ class FlagOptions:
 
 @dataclass
 class Resolved:
+    """One flag read: value, payload, variant, raw Lucida reason, condition index, request id (also `FlagDetails`)."""
+
     value: FlagValue
     payload: Any = None
     locally: bool = True
     request_id: str | None = None
+    variant: str | None = None
+    reason: str = ""
+    condition_index: int = -1
+
+    @property
+    def evaluated_locally(self) -> bool:
+        return self.locally
+
+    @property
+    def is_fallback(self) -> bool:
+        return self.reason == FALLBACK_REASON
+
+
+FlagDetails = Resolved
+FALLBACK_REASON = "fallback"
+
+
+def _local(r: FlagResult) -> Resolved:
+    return Resolved(r.value, r.payload, True, None, r.variant, r.reason, r.condition_index)
 
 
 @dataclass
@@ -45,6 +66,9 @@ class FlagState:
     defs: list[Flag] | None = None
     etag: str | None = None
     app_contexts: list[str] | None = None
+    fallbacks: dict[str, FlagValue] = field(default_factory=dict)
+    on_change: list[Callable[[], None]] = field(default_factory=list)
+    on_stale: list[Callable[[], None]] = field(default_factory=list)
     _seen: LruSet = field(default_factory=lambda: LruSet(10_000))
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -67,12 +91,23 @@ class FlagState:
         r = (self.local(distinct_id, o) or {}).get(key)
         if r is None or r.reason == REQUIRES_SERVER:
             return None
-        return Resolved(r.value, r.payload)
+        return _local(r)
+
+    def fallback(self, key: str) -> Resolved | None:
+        """The init-time fallback for `key` (reason "fallback"), used when evaluation yields nothing."""
+        return Resolved(self.fallbacks[key], None, True, None, None, FALLBACK_REASON) if key in self.fallbacks else None
+
+    def notify(self, hooks: list[Callable[[], None]]) -> None:
+        for h in list(hooks):
+            try:
+                h()
+            except Exception:  # noqa: BLE001 - a listener never breaks the reload loop
+                pass
 
     def local_all(self, distinct_id: str, o: FlagOptions) -> tuple[dict[str, Resolved], bool]:
         """Decided flags, and whether anything is left for the server."""
         loc = self.local(distinct_id, o)
-        out = {k: Resolved(r.value, r.payload) for k, r in (loc or {}).items() if r.reason != REQUIRES_SERVER}
+        out = {k: _local(r) for k, r in (loc or {}).items() if r.reason != REQUIRES_SERVER}
         return out, loc is None or any(r.reason == REQUIRES_SERVER for r in loc.values())
 
     def first_seen(self, distinct_id: str, key: str, value: FlagValue) -> bool:
@@ -110,7 +145,7 @@ def parse_remote(j: Any) -> dict[str, Resolved]:
         v = f.get("value")
         if v is None:
             v = f.get("variant") or bool(f.get("enabled"))
-        out[k] = Resolved(v, f.get("payload"), False, rid)
+        out[k] = Resolved(v, f.get("payload"), False, rid, f.get("variant") or None, f.get("reason") or "", f.get("condition_index", -1))
     return out
 
 
