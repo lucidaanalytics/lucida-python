@@ -10,7 +10,12 @@ from urllib.parse import unquote
 
 import httpx
 
-ROOT = Path(os.environ["LUCIDA_TESTDATA"]) if os.environ.get("LUCIDA_TESTDATA") else Path(__file__).resolve().parents[3] / "testdata"
+# $LUCIDA_TESTDATA, else the nearest testdata/ above this file (monorepo and mirror layouts both work)
+ROOT = (
+    Path(os.environ["LUCIDA_TESTDATA"])
+    if os.environ.get("LUCIDA_TESTDATA")
+    else next((p / "testdata" for p in Path(__file__).resolve().parents if (p / "testdata").is_dir()), Path("testdata"))
+)
 HOST = "http://lucida.test"
 Responder = Callable[[httpx.Request], httpx.Response | None]
 

@@ -5,11 +5,19 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+def _testdata(rel: str) -> Path:
+    """$LUCIDA_TESTDATA, else the nearest testdata/ above this file (monorepo and mirror layouts both work)."""
+    if os.environ.get("LUCIDA_TESTDATA"):
+        return Path(os.environ["LUCIDA_TESTDATA"]) / rel
+    return next(p / "testdata" / rel for p in Path(__file__).resolve().parents if (p / "testdata" / rel).exists())
+
 
 _SRC = Path(__file__).resolve().parents[1] / "src" / "lucida" / "openfeature_provider.py"
 _spec = importlib.util.spec_from_file_location("lucida_openfeature_provider", _SRC)
@@ -93,7 +101,7 @@ class ProviderTest(unittest.TestCase):
         self.assertEqual(self.flags.calls[-1], ("on", "user-9", {"plan": "pro"}))
 
     def test_reason_table_matches_shared_json(self) -> None:
-        table = json.loads((Path(__file__).resolve().parents[3] / "testdata" / "openfeature" / "reasons.json").read_text())
+        table = json.loads(_testdata("openfeature/reasons.json").read_text())
         for raw, row in table["reasons"].items():
             self.assertEqual(mod.map_reason(raw, True).value, row["reason"], raw)
             if "variant_reason" in row:

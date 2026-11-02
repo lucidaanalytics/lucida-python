@@ -1,0 +1,28 @@
+{
+  "description": "Lucida flag reason (gateway flagOut.reason / local evaluator Result.reason) -> OpenFeature reason. `variant_reason` applies when the resolved value is a variant string (multivariate bucket). Unknown reasons map to UNKNOWN. Every OpenFeature provider maps through this table and tests against it (N-EXP-2).",
+  "reasons": {
+    "condition_match": { "reason": "TARGETING_MATCH", "variant_reason": "SPLIT" },
+    "sticky_bucket": { "reason": "CACHED" },
+    "no_condition_match": { "reason": "DEFAULT" },
+    "out_of_rollout": { "reason": "DEFAULT" },
+    "holdout": { "reason": "DEFAULT" },
+    "namespace_excluded": { "reason": "DEFAULT" },
+    "no_bucketing_key": { "reason": "DEFAULT" },
+    "prerequisite_failed": { "reason": "DEFAULT" },
+    "prerequisite_missing": { "reason": "DEFAULT" },
+    "prerequisite_cycle": { "reason": "ERROR" },
+    "inactive": { "reason": "DISABLED" },
+    "kill_switch": { "reason": "DISABLED" },
+    "app_context_excluded": { "reason": "DISABLED" },
+    "preview": { "reason": "STATIC" },
+    "user_preview": { "reason": "STATIC" },
+    "fallback": { "reason": "DEFAULT" },
+    "": { "reason": "UNKNOWN" }
+  },
+  "flag_metadata_keys": ["lucidaReason", "conditionIndex", "requestId", "evaluatedLocally"],
+  "notes": [
+    "flagMetadata.lucidaReason always carries the raw Lucida reason (e.g. \"fallback\", \"kill_switch\").",
+    "Reason `fallback` is served by the SDK (init-time `fallbacks` map, N-EXP-16) when evaluation fails or the flag is missing; providers return the fallback value with OpenFeature reason DEFAULT and no errorCode so the OpenFeature SDK keeps the value.",
+    "A missing flag without a fallback is errorCode FLAG_NOT_FOUND, reason ERROR."
+  ]
+}
