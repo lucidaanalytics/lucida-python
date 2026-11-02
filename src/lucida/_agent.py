@@ -99,7 +99,11 @@ def redact(text: str) -> str | None:
     """Masked copy (cards, emails, phones -> `*`, whitespace kept); None when nothing matched."""
     cur = text
     for rx, ok in _RULES:
-        cur = rx.sub(lambda m, ok=ok: stars(m[0]) if ok(m[0]) else m[0], cur)
+
+        def mask(m: re.Match[str], ok: Callable[[str], bool] = ok) -> str:
+            return stars(m[0]) if ok(m[0]) else m[0]
+
+        cur = rx.sub(mask, cur)
     return None if cur == text else cur
 
 
