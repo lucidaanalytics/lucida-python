@@ -3,10 +3,21 @@
 Server SDK for Lucida: sync and asyncio clients (httpx), Python >= 3.10, typed (`py.typed`, `mypy --strict` clean).
 Pass a `distinct_id` to every call, or open a context (below) and pass `None`.
 
+## Install
+
+**Source install until the registry release** (the package is not on its registry yet):
+
+```sh
+pip install "git+https://github.com/lucidaanalytics/lucida-python.git"
+```
+
+The distribution is `lucida-analytics`; the import is `lucida`. Do not `pip install lucida`: that PyPI name is someone else's package.
+
+
 ```python
 from lucida import Lucida
 
-with Lucida("lc_pk_...", host="https://app.lucida.dev", secret_key="lc_sk_...") as lc:
+with Lucida("lc_pk_...", host="https://capture.lucidace.com", secret_key="lc_sk_...") as lc:
     lc.capture("u1", "purchase", {"total": 12}, groups={"company": "acme"})
     lc.identify("u1", {"plan": "pro"})
     lc.alias("u1", "anon-9")

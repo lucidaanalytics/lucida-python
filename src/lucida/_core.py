@@ -16,7 +16,7 @@ VERSION = "0.1.0"
 LIB = "lucida-python"
 MIN_GZIP_BYTES = 1024
 MAX_BATCH = 1000
-DEFAULT_HOST = "https://app.lucida.dev"
+DEFAULT_HOST = "https://capture.lucidace.com"
 
 Props = Mapping[str, Any]
 WireEvent = dict[str, Any]

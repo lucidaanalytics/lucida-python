@@ -23,5 +23,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes --verify-tag
-      # Register this repo and release.yml as a trusted publisher on PyPI first (docs/guides/sdk-releases.md).
+      # Trusted publishing (register this repo and release.yml on PyPI, docs/guides/sdk-releases.md), or a
+      # PYPI_API_TOKEN repository secret for the first release: an empty password means trusted publishing.
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
