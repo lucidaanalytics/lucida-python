@@ -6,12 +6,12 @@ import hashlib
 import json
 import threading
 import uuid as uuidlib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from typing import Any
 
 from ._context import get_context
-from ._core import LruSet, Props, WireEvent, make_event
+from ._core import ImportEvent, LruSet, Props, WireEvent, import_wire, make_event
 
 IDENTITY_DEDUPE_SIZE = 1000
 
@@ -44,12 +44,31 @@ class EventBuilder:
         self._is_server = is_server
         self._identities = LruSet(IDENTITY_DEDUPE_SIZE)
         self._identities_lock = threading.Lock()
+        self._identity_keys: dict[str, str] = {}  # event uuid -> dedupe key, until the batch is dropped
 
-    def first_identity(self, *parts: Any) -> bool:
-        """True the first time this exact identify/group call (id + props) is seen in the process (bounded LRU)."""
+    def identity_uuid(self, *parts: Any) -> str | None:
+        """The uuid to send an identify/group event under the first time this exact call (id + props) is seen, else None.
+
+        The call stays deduped while its event is queued or delivered; `on_dropped` frees it when the batch is dropped.
+        """
         key = hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()
         with self._identities_lock:
-            return self._identities.add(key)
+            if not self._identities.add(key):
+                return None
+            uid = str(uuidlib.uuid4())
+            self._identity_keys[uid] = key
+            if len(self._identity_keys) > IDENTITY_DEDUPE_SIZE:
+                del self._identity_keys[next(iter(self._identity_keys))]
+            return uid
+
+    def on_dropped(self, err: Exception, events: list[WireEvent]) -> None:
+        """Queue/sender error hook: free the identity keys of undelivered events, then call the user's `on_error`."""
+        with self._identities_lock:
+            for e in events:
+                key = self._identity_keys.pop(str(e.get("uuid")), None)
+                if key is not None:
+                    self._identities.discard(key)
+        notify(self.on_error, err, events)
 
     def register(self, properties: Props) -> None:
         """Client-wide default properties; per-event and context properties override them."""
@@ -57,6 +76,19 @@ class EventBuilder:
 
     def unregister(self, key: str) -> None:
         self.super_props.pop(key, None)
+
+    def import_wire(self, events: Iterable[ImportEvent], raw: bool = False) -> list[WireEvent]:
+        """Wire events for a historical import: default properties and `before_send` apply unless `raw`."""
+        if raw:
+            return [import_wire(e) for e in events]
+        built = (
+            self.build(
+                e["distinct_id"], e["event"], e.get("properties"), timestamp=e.get("timestamp"),
+                uuid=e.get("uuid"), set=e.get("set"), set_once=e.get("set_once"),
+            )
+            for e in events
+        )
+        return [w for w in built if w is not None]
 
     def build(
         self,

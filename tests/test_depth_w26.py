@@ -36,6 +36,43 @@ def test_identify_and_group_dedupe() -> None:
     assert [e["event"] for e in srv.events()] == ["$identify", "$groupidentify", "$identify"]
 
 
+def test_identify_retried_after_dropped_batch() -> None:
+    srv = FakeServer()
+    calls: list[int] = []
+
+    def respond(r: httpx.Request) -> httpx.Response | None:
+        calls.append(1)
+        return httpx.Response(400) if len(calls) == 1 else None
+
+    srv.respond = respond
+    errors: list[object] = []
+    lc = mk(srv, on_error=lambda e, evs: errors.append(e))
+    lc.identify("u", {"a": 1})
+    lc.group_identify("org", "acme", {"n": 1})
+    lc.flush()
+    assert len(errors) == 1
+    lc.identify("u", {"a": 1})
+    lc.group_identify("org", "acme", {"n": 1})
+    lc.shutdown()
+    # the rejected batch is recorded by the fake too; without the fix the repeat would never be sent
+    assert [e["event"] for e in srv.events()] == ["$identify", "$groupidentify"] * 2
+
+
+def test_import_events_applies_before_send_and_defaults_unless_raw() -> None:
+    srv = FakeServer()
+    lc = mk(
+        srv,
+        secret_key="lc_sk_x",
+        default_properties={"env": "prod"},
+        before_send=lambda e: None if e["event"] == "drop" else e,
+    )
+    assert lc.import_events([{"distinct_id": "u", "event": "keep"}, {"distinct_id": "u", "event": "drop"}]) == 1
+    assert lc.import_events([{"distinct_id": "u", "event": "plain"}], raw=True) == 1
+    keep, plain = srv.events("/v1/s2s/batch")
+    assert keep["properties"]["env"] == "prod" and "env" not in plain["properties"]
+    lc.shutdown()
+
+
 def test_capture_immediate_retries_then_succeeds() -> None:
     srv = FakeServer()
     calls: list[int] = []

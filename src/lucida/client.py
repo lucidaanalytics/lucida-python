@@ -23,7 +23,6 @@ from ._core import (
     Props,
     batch_payload,
     encode,
-    import_wire,
     parse_retry_after,
     retry_delay,
 )
@@ -127,7 +126,7 @@ class Lucida:
         if disabled:
             self.ready.set()
             return
-        self._direct = DirectSender(self._post_batch, on_error=on_error)
+        self._direct = DirectSender(self._post_batch, on_error=self._builder.on_dropped)
         self._queue = self._direct if sync_mode else SyncQueue(  # type: ignore[assignment]
             self._post_batch,
             flush_at=flush_at,
@@ -136,7 +135,7 @@ class Lucida:
             max_retries=max_retries,
             log=log.debug,
             batch_size=max_batch_size,
-            on_error=on_error,
+            on_error=self._builder.on_dropped,
         )
         if secret_key:
             self._poller = threading.Thread(
@@ -222,8 +221,9 @@ class Lucida:
 
     def identify(self, distinct_id: str | None, properties: Props | None = None, properties_set_once: Props | None = None) -> None:
         """`$identify`; an identical call (same id and properties) already sent in this process is skipped."""
-        if self._builder.first_identity("identify", distinct_id, properties, properties_set_once):
-            self.capture(distinct_id, "$identify", set=properties, set_once=properties_set_once)
+        uid = self._builder.identity_uuid("identify", distinct_id, properties, properties_set_once)
+        if uid:
+            self.capture(distinct_id, "$identify", uuid=uid, set=properties, set_once=properties_set_once)
 
     def set_person_properties(self, distinct_id: str | None, properties: Props) -> None:
         """Set person properties via a `$set` event (not deduped)."""
@@ -239,12 +239,14 @@ class Lucida:
     def group_identify(
         self, group_type: str, group_key: str, properties: Props | None = None, distinct_id: str | None = None
     ) -> None:
-        if not self._builder.first_identity("group", group_type, group_key, distinct_id, properties):
+        uid = self._builder.identity_uuid("group", group_type, group_key, distinct_id, properties)
+        if not uid:
             return
         self.capture(
             distinct_id or f"${group_type}_{group_key}",
             "$groupidentify",
             {"$group_type": group_type, "$group_key": group_key, "$group_set": dict(properties or {})},
+            uuid=uid,
         )
 
     def flush(self, timeout: float | None = None) -> bool:
@@ -288,16 +290,17 @@ class Lucida:
         r = self._post(f"{self._host}/v1/batch", batch_payload(self._api_key, batch))
         return (0, None) if r is None else (r.status_code, parse_retry_after(r.headers.get("retry-after")))
 
-    def import_events(self, events: Iterable[ImportEvent]) -> int:
+    def import_events(self, events: Iterable[ImportEvent], *, raw: bool = False) -> int:
         """Historical import via POST /v1/s2s/batch (secret key, timestamps kept), chunks of 1000.
 
+        Default properties and `before_send` apply (an event it drops is not sent); `raw=True` sends events as given.
         Raises `LucidaError` on the first rejected chunk; returns the number of events accepted.
         """
         if not self._secret:
             raise LucidaError("import_events requires secret_key")
         if self._disabled:
             return 0
-        wire = [import_wire(e) for e in events]
+        wire = self._builder.import_wire(events, raw)
         if self.sink is not None:
             for w in wire:
                 self.sink.add(w)

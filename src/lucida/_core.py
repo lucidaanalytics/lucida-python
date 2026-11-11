@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, TypedDict
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 LIB = "lucida-python"
 MIN_GZIP_BYTES = 1024
 MAX_BATCH = 1000
@@ -142,6 +142,9 @@ class LruSet:
         if len(self._m) > self._max:
             self._m.popitem(last=False)
         return not had
+
+    def discard(self, key: str) -> None:
+        self._m.pop(key, None)
 
     def __len__(self) -> int:
         return len(self._m)
